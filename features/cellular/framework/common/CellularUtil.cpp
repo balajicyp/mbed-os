@@ -25,13 +25,13 @@
 #define RANDOM_PORT_NUMBER_COUNT (RANDOM_PORT_NUMBER_END - RANDOM_PORT_NUMBER_START + 1)
 #define RANDOM_PORT_NUMBER_MAX_STEP 100
 
-
+using namespace mbed;
 namespace mbed_cellular_util {
 
-void convert_ipv6(char *ip)
+nsapi_version_t convert_ipv6(char *ip)
 {
     if (!ip) {
-        return;
+        return NSAPI_UNSPEC;
     }
 
     int len = strlen(ip);
@@ -49,7 +49,11 @@ void convert_ipv6(char *ip)
 
     // more that 3 periods mean that it was ipv6 but in format of a1.a2.a3.a4.a5.a6.a7.a8.a9.a10.a11.a12.a13.a14.a15.a16
     // we need to convert it to hexadecimal format separated with colons
-    if (pos > 3) {
+    if (pos == 3) {
+
+        return NSAPI_IPv4;
+
+    } else if (pos > 3) {
         pos = 0;
         int ip_pos = 0;
         char b;
@@ -74,7 +78,11 @@ void convert_ipv6(char *ip)
                 ip[pos] = '\0';
             }
         }
+
+        return NSAPI_IPv6;
     }
+
+    return NSAPI_UNSPEC;
 }
 
 // For example "32.1.13.184.0.0.205.48.0.0.0.0.0.0.0.0"
@@ -271,13 +279,20 @@ int hex_str_to_char_str(const char *str, uint16_t len, char *buf)
 {
     int strcount = 0;
     for (int i = 0; i + 1 < len; i += 2) {
-        int upper = hex_str_to_int(str + i, 1);
-        int lower = hex_str_to_int(str + i + 1, 1);
-        buf[strcount] = ((upper << 4) & 0xF0) | (lower & 0x0F);
+        char tmp;
+        hex_to_char(str + i, tmp);
+        buf[strcount] = tmp;
         strcount++;
     }
 
     return strcount;
+}
+
+void hex_to_char(const char *hex, char &buf)
+{
+    int upper = hex_str_to_int(hex, 1);
+    int lower = hex_str_to_int(hex + 1, 1);
+    buf = ((upper << 4) & 0xF0) | (lower & 0x0F);
 }
 
 void uint_to_binary_str(uint32_t num, char *str, int str_size, int bit_cnt)
@@ -353,6 +368,23 @@ uint16_t get_dynamic_ip_port()
     port_counter %= RANDOM_PORT_NUMBER_COUNT;
 
     return (RANDOM_PORT_NUMBER_START + port_counter);
+}
+
+pdp_type_t string_to_pdp_type(const char *pdp_type_str)
+{
+    pdp_type_t pdp_type = DEFAULT_PDP_TYPE;
+    int len = strlen(pdp_type_str);
+
+    if (len == 6 && memcmp(pdp_type_str, "IPV4V6", len) == 0) {
+        pdp_type = IPV4V6_PDP_TYPE;
+    } else if (len == 4 && memcmp(pdp_type_str, "IPV6", len) == 0) {
+        pdp_type = IPV6_PDP_TYPE;
+    } else if (len == 2 && memcmp(pdp_type_str, "IP", len) == 0) {
+        pdp_type = IPV4_PDP_TYPE;
+    } else if (len == 6 && memcmp(pdp_type_str, "Non-IP", len) == 0) {
+        pdp_type = NON_IP_PDP_TYPE;
+    }
+    return pdp_type;
 }
 
 } // namespace mbed_cellular_util

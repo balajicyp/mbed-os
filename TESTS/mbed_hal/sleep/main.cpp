@@ -16,7 +16,7 @@
 
 #if !DEVICE_SLEEP
 #error [NOT_SUPPORTED] sleep not supported for this target
-#endif
+#else
 
 #include "mbed.h"
 
@@ -24,6 +24,7 @@
 #include "unity/unity.h"
 #include "greentea-client/test_env.h"
 #include "mbed_lp_ticker_wrapper.h"
+#include "hal/us_ticker_api.h"
 
 #include "sleep_test_utils.h"
 #include "sleep_api_tests.h"
@@ -260,3 +261,5 @@ int main()
 {
     Harness::run(specification);
 }
+
+#endif // !DEVICE_SLEEP

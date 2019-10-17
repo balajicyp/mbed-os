@@ -1,13 +1,5 @@
-
-/** \addtogroup platform */
-/** @{*/
-/**
- * \defgroup platform_toolchain Toolchain functions
- * @{
- */
-
 /* mbed Microcontroller Library
- * Copyright (c) 2006-2013 ARM Limited
+ * Copyright (c) 2006-2019 ARM Limited
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -25,7 +17,7 @@
 #ifndef MBED_TOOLCHAIN_H
 #define MBED_TOOLCHAIN_H
 
-#include "mbed_preprocessor.h"
+#include "platform/mbed_preprocessor.h"
 
 
 // Warning for unsupported compilers
@@ -36,6 +28,13 @@
 #warning "This compiler is not yet supported."
 #endif
 
+/** \addtogroup platform-public-api */
+/** @{*/
+
+/**
+ * \defgroup platform_toolchain Toolchain functions
+ * @{
+ */
 
 // Attributes
 

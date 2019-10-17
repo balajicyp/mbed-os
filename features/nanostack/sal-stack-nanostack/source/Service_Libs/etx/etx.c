@@ -92,19 +92,24 @@ static void etx_calculation(etx_storage_t *entry, uint16_t attempts, uint8_t ack
         entry->stored_diff_etx = entry->etx;
     }
 
-
     uint32_t etx = attempts << (12 - ETX_MOVING_AVERAGE_FRACTION);
 
-    if (acks_rx > 1) {
+    if (acks_rx) {
         etx /= acks_rx;
+    } else  {
+        etx = 0xffff;
     }
-
     if ((etx_info.max_etx_update) && etx > etx_info.max_etx_update) {
         etx = etx_info.max_etx_update;
     }
 
-    //Add old etx 7/8 to new one
-    etx += entry->etx - (entry->etx >> ETX_MOVING_AVERAGE_FRACTION);
+    if (etx_info.cache_sample_requested && entry->etx_samples == 1) {
+        // skip the initial value as RSSI generated ETX is not valid
+        etx = etx << 3;
+    } else {
+        //Add old etx 7/8 to new one
+        etx += entry->etx - (entry->etx >> ETX_MOVING_AVERAGE_FRACTION);
+    }
 
     if (etx > 0xffff) {
         etx = 0xffff;
@@ -157,7 +162,7 @@ static bool etx_update_possible(etx_sample_storage_t *storage, etx_storage_t *en
         }
     }
 
-    tr_debug("ETX update possible %u attempts, %u rx ack", storage->attempts_count, storage->received_acks);
+    //tr_debug("ETX update possible %u attempts, %u rx ack", storage->attempts_count, storage->received_acks);
 
     return true;
 
@@ -201,11 +206,12 @@ void etx_transm_attempts_update(int8_t interface_id, uint8_t attempts, bool succ
         entry->etx_samples++;
     }
 
-    if (etx_info.cache_sample_requested && !entry->tmp_etx) {
+    if (etx_info.cache_sample_requested) {
 
         etx_sample_storage_t *storage = etx_cache_sample_update(attribute_index, attempts, success);
         entry->accumulated_failures = 0;
-        if (!etx_update_possible(storage, entry, 0)) {
+
+        if (!entry->etx || (entry->etx_samples > 1 &&  !etx_update_possible(storage, entry, 0))) {
             return;
         }
 
@@ -318,9 +324,6 @@ uint16_t etx_read(int8_t interface_id, addrtype_t addr_type, const uint8_t *addr
     }
     attribute_index = mac_neighbor->index;
 
-
-    //tr_debug("Etx Read from atribute %u", attribute_index);
-
     etx_storage_t *entry = etx_storage_entry_get(interface_id, attribute_index);
 
     if (!entry) {
@@ -329,8 +332,6 @@ uint16_t etx_read(int8_t interface_id, addrtype_t addr_type, const uint8_t *addr
 
     uint16_t etx  = etx_current_calc(entry->etx, entry->accumulated_failures);
     etx >>= 4;
-
-    //tr_debug("Etx value %u", etx);
 
     return etx;
 }
@@ -632,7 +633,6 @@ void etx_max_update_set(uint16_t etx_max_update)
 etx_storage_t *etx_storage_entry_get(int8_t interface_id, uint8_t attribute_index)
 {
     if (etx_info.interface_id != interface_id || !etx_info.etx_storage_list || attribute_index >= etx_info.ext_storage_list_size) {
-        tr_debug("Unknow ID or un initilized ETX %u", attribute_index);
         return NULL;
     }
 
@@ -745,7 +745,7 @@ static void etx_accum_failures_callback_needed_check(etx_storage_t *entry, uint8
 void etx_neighbor_remove(int8_t interface_id, uint8_t attribute_index)
 {
 
-    tr_debug("Remove attribute %u", attribute_index);
+    //tr_debug("Remove attribute %u", attribute_index);
     uint16_t stored_diff_etx;
     etx_storage_t *entry = etx_storage_entry_get(interface_id, attribute_index);
     if (entry && etx_info.callback_ptr) {
@@ -780,7 +780,7 @@ void etx_neighbor_remove(int8_t interface_id, uint8_t attribute_index)
 void etx_neighbor_add(int8_t interface_id, uint8_t attribute_index)
 {
 
-    tr_debug("Add attribute %u", attribute_index);
+    //tr_debug("Add attribute %u", attribute_index);
     uint16_t stored_diff_etx;
     etx_storage_t *entry = etx_storage_entry_get(interface_id, attribute_index);
     if (entry && etx_info.callback_ptr) {
@@ -804,12 +804,7 @@ void etx_cache_timer(int8_t interface_id, uint16_t seconds_update)
     }
 
     protocol_interface_info_entry_t *interface = protocol_stack_interface_info_get_by_id(interface_id);
-    if (!interface) {
-        return;
-    }
-
-
-    if (!mac_neighbor_info(interface)) {
+    if (!interface || !mac_neighbor_info(interface)) {
         return;
     }
 

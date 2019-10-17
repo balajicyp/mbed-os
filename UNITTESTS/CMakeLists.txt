@@ -86,12 +86,16 @@ endif(COVERAGE)
 # UNIT TESTS
 ####################
 
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DUNITTEST")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DUNITTEST")
+
 # Set include dirs.
 set(unittest-includes-base
   "${PROJECT_SOURCE_DIR}/target_h"
   "${PROJECT_SOURCE_DIR}/target_h/events"
   "${PROJECT_SOURCE_DIR}/target_h/events/equeue"
   "${PROJECT_SOURCE_DIR}/target_h/platform"
+  "${PROJECT_SOURCE_DIR}/target_h/platform/cxxsupport"
   "${PROJECT_SOURCE_DIR}/target_h/drivers"
   "${PROJECT_SOURCE_DIR}/stubs"
   "${PROJECT_SOURCE_DIR}/.."
@@ -101,7 +105,8 @@ set(unittest-includes-base
   "${PROJECT_SOURCE_DIR}/../drivers"
   "${PROJECT_SOURCE_DIR}/../hal"
   "${PROJECT_SOURCE_DIR}/../events"
-  "${PROJECT_SOURCE_DIR}/../events/equeue"
+  "${PROJECT_SOURCE_DIR}/../events/source"
+  "${PROJECT_SOURCE_DIR}/../events/internal"
   "${PROJECT_SOURCE_DIR}/../rtos"
   "${PROJECT_SOURCE_DIR}/../rtos/TARGET_CORTEX"
   "${PROJECT_SOURCE_DIR}/../rtos/TARGET_CORTEX/rtx5/Include"
@@ -128,6 +133,7 @@ set(unittest-includes-base
   "${PROJECT_SOURCE_DIR}/../features/lorawan/system"
   "${PROJECT_SOURCE_DIR}/../features/mbedtls"
   "${PROJECT_SOURCE_DIR}/../features/mbedtls/inc"
+  "${PROJECT_SOURCE_DIR}/../features/mbedtls/mbed-crypto/inc"
 )
 
 # Create a list for test suites.

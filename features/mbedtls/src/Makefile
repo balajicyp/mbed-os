@@ -2,7 +2,7 @@
 # Also see "include/mbedtls/config.h"
 
 CFLAGS	?= -O2
-WARNING_CFLAGS ?=  -Wall -W -Wdeclaration-after-statement
+WARNING_CFLAGS ?=  -Wall -Wextra
 LDFLAGS ?=
 
 LOCAL_CFLAGS = $(WARNING_CFLAGS) -I../include -D_FILE_OFFSET_BITS=64
@@ -35,8 +35,8 @@ LOCAL_CFLAGS += -fPIC -fpic
 endif
 endif
 
-SOEXT_TLS=so.12
-SOEXT_X509=so.0
+SOEXT_TLS=so.13
+SOEXT_X509=so.1
 SOEXT_CRYPTO=so.3
 
 # Set AR_DASH= (empty string) to use an ar implementation that does not accept
@@ -79,6 +79,12 @@ OBJS_TLS=	debug.o		net_sockets.o		\
 		ssl_cli.o	ssl_cookie.o		\
 		ssl_srv.o	ssl_ticket.o		\
 		ssl_tls.o
+
+INCLUDING_FROM_MBEDTLS:=1
+include ../crypto/3rdparty/Makefile.inc
+LOCAL_CFLAGS += $(patsubst -I../3rdparty/%, -I../crypto/3rdparty/%, $(THIRDPARTY_INCLUDES))
+OBJS_CRYPTO  += $(patsubst ../3rdparty/%, ../crypto/3rdparty/%, $(THIRDPARTY_CRYPTO_OBJECTS))
+
 
 .SILENT:
 
@@ -153,11 +159,13 @@ libmbedcrypto.%:
 
 .c.o:
 	echo "  CC    $<"
-	$(CC) $(LOCAL_CFLAGS) $(CFLAGS) -c $<
+	$(CC) $(LOCAL_CFLAGS) $(CFLAGS) -o $@ -c $<
 
 clean:
 ifndef WINDOWS
-	rm -f *.o libmbed*
+	rm -f *.o libmbed* $(OBJS_CRYPTO)
 else
-	del /Q /F *.o libmbed*
+	if exist *.o del /Q /F *.o
+	if exist libmbed* del /Q /F libmbed*
+	if exist $(OBJS_CRYPTO) del /Q /F $(OBJS_CRYPTO)
 endif

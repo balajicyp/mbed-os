@@ -115,6 +115,11 @@ void find_ports(std::list<PortType> &matched_ports, std::list<PortType> &not_mat
                              FormFactorType::pin_to_string(port.pins[i]), port.pins[i]);
                 continue;
             }
+            if (pinmap_list_has_peripheral(pinmap_restricted_peripherals(), port.peripheral)) {
+                utest_printf("Skipping %s peripheral %i with pin %s (%i)\r\n", pin_type,
+                             port.peripheral, FormFactorType::pin_to_string(port.pins[i]), port.pins[i]);
+                continue;
+            }
             // skipp pin searching if single pin port type
             if (PortType::pin_count > 1) {
                 find_port_pins<PortType, FormFactorType>(port);
@@ -424,6 +429,29 @@ public:
  * all_ports, all_peripherals and one_peripheral to select the peripheral
  * pin set to use for testing.
  */
+
+struct GPIOMaps {
+    static const PinMap *maps[];
+    static const char *const pin_type_names[];
+    static const char *const name;
+};
+const PinMap *GPIOMaps::maps[] = { gpio_pinmap() };
+const char *const GPIOMaps::pin_type_names[] = { "IO" };
+const char *const GPIOMaps::name = "GPIO";
+typedef Port<1, GPIOMaps, DefaultFormFactor, TF1> GPIOPort;
+
+#if DEVICE_INTERRUPTIN
+#include "gpio_irq_api.h"
+struct GPIOIRQMaps {
+    static const PinMap *maps[];
+    static const char *const pin_type_names[];
+    static const char *const name;
+};
+const PinMap *GPIOIRQMaps::maps[] = { gpio_irq_pinmap() };
+const char *const GPIOIRQMaps::pin_type_names[] = { "IRQ_IN" };
+const char *const GPIOIRQMaps::name = "GPIO_IRQ";
+typedef Port<1, GPIOIRQMaps, DefaultFormFactor, TF1> GPIOIRQPort;
+#endif
 
 #if DEVICE_SPI
 #include "spi_api.h"

@@ -28,6 +28,7 @@ int CellularUtil_stub::char_pos = 0;
 char *CellularUtil_stub::char_table[50] = {};
 int CellularUtil_stub::table_idx = 0;
 
+using namespace mbed;
 namespace mbed_cellular_util {
 
 #define MAX_STRING_LEN 200
@@ -50,9 +51,9 @@ uint16_t char_str_to_hex(const char *str, uint16_t len, char *buf, bool omit_lea
     return CellularUtil_stub::uint16_value;
 }
 
-void convert_ipv6(char *ip)
+nsapi_version_t convert_ipv6(char *ip)
 {
-
+    return NSAPI_UNSPEC;
 }
 
 char *find_dot_number(char *str, int dot_number)
@@ -109,6 +110,11 @@ int hex_str_to_char_str(const char *str, uint16_t len, char *buf)
     return 1;
 }
 
+void hex_to_char(const char *hex, char &buf)
+{
+    buf = CellularUtil_stub::char_ptr[CellularUtil_stub::char_pos++];
+}
+
 void uint_to_binary_str(uint32_t num, char *str, int str_size, int bit_cnt)
 {
 
@@ -122,6 +128,11 @@ int char_str_to_hex_str(const char *str, uint16_t len, char *buf, bool omit_lead
 uint16_t get_dynamic_ip_port()
 {
     return CellularUtil_stub::uint16_value;
+}
+
+pdp_type_t string_to_pdp_type(const char *pdp_type)
+{
+    return IPV4V6_PDP_TYPE;
 }
 
 } // namespace mbed_cellular_util

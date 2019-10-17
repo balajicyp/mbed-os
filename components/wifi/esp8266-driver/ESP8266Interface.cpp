@@ -28,7 +28,7 @@
 #include "platform/Callback.h"
 #include "platform/mbed_atomic.h"
 #include "platform/mbed_debug.h"
-#include "platform/mbed_wait_api.h"
+#include "rtos/ThisThread.h"
 
 #ifndef MBED_CONF_ESP8266_DEBUG
 #define MBED_CONF_ESP8266_DEBUG false
@@ -46,14 +46,20 @@
 #define MBED_CONF_ESP8266_RST NC
 #endif
 
+#ifndef MBED_CONF_ESP8266_PWR
+#define MBED_CONF_ESP8266_PWR NC
+#endif
+
 #define TRACE_GROUP  "ESPI" // ESP8266 Interface
 
 using namespace mbed;
+using namespace rtos;
 
 #if defined MBED_CONF_ESP8266_TX && defined MBED_CONF_ESP8266_RX
 ESP8266Interface::ESP8266Interface()
     : _esp(MBED_CONF_ESP8266_TX, MBED_CONF_ESP8266_RX, MBED_CONF_ESP8266_DEBUG, MBED_CONF_ESP8266_RTS, MBED_CONF_ESP8266_CTS),
       _rst_pin(MBED_CONF_ESP8266_RST), // Notice that Pin7 CH_EN cannot be left floating if used as reset
+      _pwr_pin(MBED_CONF_ESP8266_PWR),
       _ap_sec(NSAPI_SECURITY_UNKNOWN),
       _if_blocking(true),
       _if_connected(_cmutex),
@@ -63,7 +69,8 @@ ESP8266Interface::ESP8266Interface()
       _conn_stat_cb(NULL),
       _global_event_queue(mbed_event_queue()), // Needs to be set before attaching event() to SIGIO
       _oob_event_id(0),
-      _connect_event_id(0)
+      _connect_event_id(0),
+      _software_conn_stat(IFACE_STATUS_DISCONNECTED)
 {
     memset(_cbs, 0, sizeof(_cbs));
     memset(ap_ssid, 0, sizeof(ap_ssid));
@@ -86,13 +93,15 @@ ESP8266Interface::ESP8266Interface()
 #endif
 
 // ESP8266Interface implementation
-ESP8266Interface::ESP8266Interface(PinName tx, PinName rx, bool debug, PinName rts, PinName cts, PinName rst)
+ESP8266Interface::ESP8266Interface(PinName tx, PinName rx, bool debug, PinName rts, PinName cts, PinName rst, PinName pwr)
     : _esp(tx, rx, debug, rts, cts),
       _rst_pin(rst),
+      _pwr_pin(pwr),
       _ap_sec(NSAPI_SECURITY_UNKNOWN),
       _if_blocking(true),
       _if_connected(_cmutex),
       _initialized(false),
+      _connect_retval(NSAPI_ERROR_OK),
       _conn_stat(NSAPI_STATUS_DISCONNECTED),
       _conn_stat_cb(NULL),
       _global_event_queue(mbed_event_queue()), // Needs to be set before attaching event() to SIGIO
@@ -132,6 +141,8 @@ ESP8266Interface::~ESP8266Interface()
 
     // Power down the modem
     _rst_pin.rst_assert();
+    // Power off the modem
+    _pwr_pin.power_off();
 }
 
 ESP8266Interface::ResetPin::ResetPin(PinName rst_pin) : _rst_pin(mbed::DigitalOut(rst_pin, 1))
@@ -142,7 +153,7 @@ void ESP8266Interface::ResetPin::rst_assert()
 {
     if (_rst_pin.is_connected()) {
         _rst_pin = 0;
-        tr_debug("HW reset asserted");
+        tr_debug("rst_assert(): HW reset asserted.");
     }
 }
 
@@ -151,13 +162,46 @@ void ESP8266Interface::ResetPin::rst_deassert()
     if (_rst_pin.is_connected()) {
         // Notice that Pin7 CH_EN cannot be left floating if used as reset
         _rst_pin = 1;
-        tr_debug("HW reset deasserted");
+        tr_debug("rst_deassert(): HW reset deasserted.");
     }
 }
 
 bool ESP8266Interface::ResetPin::is_connected()
 {
     return _rst_pin.is_connected();
+}
+
+ESP8266Interface::PowerPin::PowerPin(PinName pwr_pin) : _pwr_pin(mbed::DigitalOut(pwr_pin, !MBED_CONF_ESP8266_POWER_ON_POLARITY))
+{
+}
+
+void ESP8266Interface::PowerPin::power_on()
+{
+    if (_pwr_pin.is_connected()) {
+        _pwr_pin = MBED_CONF_ESP8266_POWER_ON_POLARITY;
+        tr_debug("power_on(): HW power-on.");
+        ThisThread::sleep_for(MBED_CONF_ESP8266_POWER_ON_TIME_MS);
+    }
+}
+
+void ESP8266Interface::PowerPin::power_off()
+{
+    if (_pwr_pin.is_connected()) {
+        _pwr_pin = !MBED_CONF_ESP8266_POWER_ON_POLARITY;
+        tr_debug("power_off(): HW power-off.");
+        ThisThread::sleep_for(MBED_CONF_ESP8266_POWER_OFF_TIME_MS);
+    }
+}
+
+void ESP8266Interface::_power_off()
+{
+    _rst_pin.rst_assert();
+    _pwr_pin.power_off();
+}
+
+bool ESP8266Interface::PowerPin::is_connected()
+{
+    return _pwr_pin.is_connected();
 }
 
 int ESP8266Interface::connect(const char *ssid, const char *pass, nsapi_security_t security,
@@ -177,21 +221,39 @@ int ESP8266Interface::connect(const char *ssid, const char *pass, nsapi_security
 
 void ESP8266Interface::_connect_async()
 {
+    nsapi_error_t status = _init();
+    if (status != NSAPI_ERROR_OK) {
+        _connect_retval = status;
+        _software_conn_stat = IFACE_STATUS_DISCONNECTED;
+        //_conn_stat_cb will be called from refresh_conn_state_cb
+        return;
+    }
+
+    if (!_esp.dhcp(true, 1)) {
+        _connect_retval = NSAPI_ERROR_DHCP_FAILURE;
+        _software_conn_stat = IFACE_STATUS_DISCONNECTED;
+        //_conn_stat_cb will be called from refresh_conn_state_cb
+        return;
+    }
     _cmutex.lock();
     if (!_connect_event_id) {
-        tr_debug("_connect_async(): cancelled");
+        tr_debug("_connect_async(): Cancelled.");
         _cmutex.unlock();
         return;
     }
     _connect_retval = _esp.connect(ap_ssid, ap_pass);
     int timeleft_ms = ESP8266_INTERFACE_CONNECT_TIMEOUT_MS - _conn_timer.read_ms();
-    if (_connect_retval == NSAPI_ERROR_OK || _connect_retval == NSAPI_ERROR_AUTH_FAILURE
+    if (_connect_retval == NSAPI_ERROR_OK
+            || _connect_retval == NSAPI_ERROR_AUTH_FAILURE
             || _connect_retval == NSAPI_ERROR_NO_SSID
             || ((_if_blocking == true) && (timeleft_ms <= 0))) {
         _connect_event_id = 0;
         _conn_timer.stop();
-        if (timeleft_ms <= 0) {
+        if (timeleft_ms <= 0 && _connect_retval != NSAPI_ERROR_OK) {
             _connect_retval = NSAPI_ERROR_CONNECTION_TIMEOUT;
+        }
+        if (_connect_retval != NSAPI_ERROR_OK) {
+            _software_conn_stat = IFACE_STATUS_DISCONNECTED;
         }
         _if_connected.notify_all();
     } else {
@@ -204,13 +266,24 @@ void ESP8266Interface::_connect_async()
         }
     }
     _cmutex.unlock();
+
+    if (_connect_event_id == 0) {
+        if (_conn_stat_cb) {
+            _conn_stat_cb(NSAPI_EVENT_CONNECTION_STATUS_CHANGE, _conn_stat);
+        }
+        if (_conn_stat == NSAPI_STATUS_GLOBAL_UP || _conn_stat == NSAPI_STATUS_LOCAL_UP) {
+            _software_conn_stat = IFACE_STATUS_CONNECTED;
+        }
+    }
 }
 
 int ESP8266Interface::connect()
 {
-    nsapi_error_t status = _conn_status_to_error();
-    if (status != NSAPI_ERROR_NO_CONNECTION) {
-        return status;
+    if (_software_conn_stat == IFACE_STATUS_CONNECTING) {
+        return NSAPI_ERROR_BUSY;
+    }
+    if (_software_conn_stat == IFACE_STATUS_CONNECTED) {
+        return NSAPI_ERROR_IS_CONNECTED;
     }
 
     if (strlen(ap_ssid) == 0) {
@@ -222,22 +295,15 @@ int ESP8266Interface::connect()
             return NSAPI_ERROR_PARAMETER;
         }
     }
-
-    status = _init();
-    if (status != NSAPI_ERROR_OK) {
-        return status;
+    if (!_if_blocking) {
+        bool ret = _cmutex.trylock();
+        if (ret == false) {
+            return NSAPI_ERROR_BUSY;
+        }
+    } else {
+        _cmutex.lock();
     }
-
-    if (get_ip_address()) {
-        return NSAPI_ERROR_IS_CONNECTED;
-    }
-
-    if (!_esp.dhcp(true, 1)) {
-        return NSAPI_ERROR_DHCP_FAILURE;
-    }
-
-    _cmutex.lock();
-
+    _software_conn_stat = IFACE_STATUS_CONNECTING;
     _connect_retval = NSAPI_ERROR_NO_CONNECTION;
     MBED_ASSERT(!_connect_event_id);
     _conn_timer.stop();
@@ -267,6 +333,9 @@ int ESP8266Interface::connect()
 int ESP8266Interface::set_credentials(const char *ssid, const char *pass, nsapi_security_t security)
 {
     nsapi_error_t status = _conn_status_to_error();
+    if (_software_conn_stat == IFACE_STATUS_CONNECTING) {
+        return NSAPI_ERROR_BUSY;
+    }
     if (status != NSAPI_ERROR_NO_CONNECTION) {
         return status;
     }
@@ -282,7 +351,7 @@ int ESP8266Interface::set_credentials(const char *ssid, const char *pass, nsapi_
     if (ssid_length > 0
             && ssid_length <= ESP8266_SSID_MAX_LENGTH) {
         memset(ap_ssid, 0, sizeof(ap_ssid));
-        strncpy(ap_ssid, ssid, sizeof(ap_ssid));
+        strncpy(ap_ssid, ssid, ESP8266_SSID_MAX_LENGTH);
     } else {
         return NSAPI_ERROR_PARAMETER;
     }
@@ -297,7 +366,7 @@ int ESP8266Interface::set_credentials(const char *ssid, const char *pass, nsapi_
         if (pass_length >= ESP8266_PASSPHRASE_MIN_LENGTH
                 && pass_length <= ESP8266_PASSPHRASE_MAX_LENGTH) {
             memset(ap_pass, 0, sizeof(ap_pass));
-            strncpy(ap_pass, pass, sizeof(ap_pass));
+            strncpy(ap_pass, pass, ESP8266_PASSPHRASE_MAX_LENGTH);
         } else {
             return NSAPI_ERROR_PARAMETER;
         }
@@ -314,39 +383,100 @@ int ESP8266Interface::set_channel(uint8_t channel)
 }
 
 
-int ESP8266Interface::disconnect()
+void ESP8266Interface::_disconnect_async()
 {
     _cmutex.lock();
+    _disconnect_retval = _esp.disconnect() ? NSAPI_ERROR_OK : NSAPI_ERROR_DEVICE_ERROR;
+    int timeleft_ms = ESP8266_INTERFACE_CONNECT_TIMEOUT_MS - _conn_timer.read_ms();
+
+    if (_disconnect_retval == NSAPI_ERROR_OK || ((_if_blocking == true) && (timeleft_ms <= 0))) {
+
+        if (timeleft_ms <= 0 && _connect_retval != NSAPI_ERROR_OK) {
+            _disconnect_retval = NSAPI_ERROR_CONNECTION_TIMEOUT;
+        } else {
+            if (_conn_stat != NSAPI_STATUS_DISCONNECTED) {
+                _conn_stat = NSAPI_STATUS_DISCONNECTED;
+            }
+            // In case the status update arrives later inform upper layers manually
+            _disconnect_event_id = 0;
+            _conn_timer.stop();
+            _connect_retval = NSAPI_ERROR_NO_CONNECTION;
+        }
+
+        _power_off();
+        _if_connected.notify_all();
+
+    } else {
+        // Postpone to give other stuff time to run
+        _disconnect_event_id = _global_event_queue->call_in(
+                                   ESP8266_INTERFACE_CONNECT_INTERVAL_MS,
+                                   callback(this, &ESP8266Interface::_disconnect_async));
+        if (!_disconnect_event_id) {
+            MBED_ERROR(
+                MBED_MAKE_ERROR(MBED_MODULE_DRIVER, MBED_ERROR_CODE_ENOMEM), \
+                "ESP8266Interface::_disconnect_async(): unable to add event to queue. Increase \"events.shared-eventsize\"\n");
+        }
+    }
+    _cmutex.unlock();
+    _software_conn_stat = IFACE_STATUS_DISCONNECTED;
+
+    if (_disconnect_event_id == 0) {
+        if (_conn_stat_cb) {
+            _conn_stat_cb(NSAPI_EVENT_CONNECTION_STATUS_CHANGE, _conn_stat);
+        }
+    }
+}
+
+int ESP8266Interface::disconnect()
+{
+    if (_software_conn_stat == IFACE_STATUS_DISCONNECTING) {
+        return NSAPI_ERROR_BUSY;
+    }
+    if (_software_conn_stat == IFACE_STATUS_DISCONNECTED) {
+        return NSAPI_ERROR_NO_CONNECTION;
+    }
+    if (!_if_blocking) {
+        bool ret = _cmutex.trylock();
+        if (ret == false) {
+            return NSAPI_ERROR_BUSY;
+        }
+    } else {
+        _cmutex.lock();
+    }
     if (_connect_event_id) {
         _global_event_queue->cancel(_connect_event_id);
         _connect_event_id = 0; // cancel asynchronous connection attempt if one is ongoing
     }
-    _cmutex.unlock();
+    _software_conn_stat = IFACE_STATUS_DISCONNECTING;
+
+    _disconnect_retval = NSAPI_ERROR_IS_CONNECTED;
+    _disconnect_event_id = 0;
+
     _initialized = false;
+    _conn_timer.stop();
+    _conn_timer.reset();
+    _conn_timer.start();
 
-    nsapi_error_t status = _conn_status_to_error();
-    if (status == NSAPI_ERROR_NO_CONNECTION) {
-        return NSAPI_ERROR_NO_CONNECTION;
+    _disconnect_event_id = _global_event_queue->call(
+                               callback(this, &ESP8266Interface::_disconnect_async));
+
+    if (!_disconnect_event_id) {
+        MBED_ERROR(MBED_MAKE_ERROR(MBED_MODULE_DRIVER, MBED_ERROR_CODE_ENOMEM),
+                   "disconnect(): unable to add event to queue. Increase \"events.shared-eventsize\"\n");
     }
 
-    int ret = _esp.disconnect() ? NSAPI_ERROR_OK : NSAPI_ERROR_DEVICE_ERROR;
-
-    if (ret == NSAPI_ERROR_OK) {
-        // Try to lure the nw status update from ESP8266, might come later
-        _esp.bg_process_oob(ESP8266_RECV_TIMEOUT, true);
-        // In case the status update arrives later inform upper layers manually
-        if (_conn_stat != NSAPI_STATUS_DISCONNECTED) {
-            _conn_stat = NSAPI_STATUS_DISCONNECTED;
-            if (_conn_stat_cb) {
-                _conn_stat_cb(NSAPI_EVENT_CONNECTION_STATUS_CHANGE, _conn_stat);
-            }
-        }
+    while (_if_blocking
+            && (_conn_status_to_error() != NSAPI_ERROR_NO_CONNECTION)
+            && (_disconnect_retval != NSAPI_ERROR_OK)) {
+        _if_connected.wait();
     }
 
-    // Power down the modem
-    _rst_pin.rst_assert();
-
-    return ret;
+    _cmutex.unlock();
+    if (!_if_blocking) {
+        return NSAPI_ERROR_OK;
+    } else {
+        return _disconnect_retval;
+    }
 }
 
 const char *ESP8266Interface::get_ip_address()
@@ -399,7 +529,7 @@ int ESP8266Interface::scan(WiFiAccessPoint *res, unsigned count, scan_mode mode,
     }
 
     return _esp.scan(res, count, (mode == SCANMODE_ACTIVE ? ESP8266::SCANMODE_ACTIVE : ESP8266::SCANMODE_PASSIVE),
-                     t_min, t_max);
+                     t_max, t_min);
 }
 
 bool ESP8266Interface::_get_firmware_ok()
@@ -423,6 +553,8 @@ bool ESP8266Interface::_get_firmware_ok()
 nsapi_error_t ESP8266Interface::_init(void)
 {
     if (!_initialized) {
+        _pwr_pin.power_off();
+        _pwr_pin.power_on();
         if (_reset() != NSAPI_ERROR_OK) {
             return NSAPI_ERROR_DEVICE_ERROR;
         }
@@ -459,7 +591,7 @@ nsapi_error_t ESP8266Interface::_reset()
         _rst_pin.rst_assert();
         // If you happen to use Pin7 CH_EN as reset pin, not needed otherwise
         // https://www.espressif.com/sites/default/files/documentation/esp8266_hardware_design_guidelines_en.pdf
-        wait_ms(2); // Documentation says 200 us should have been enough, but experimentation shows that 1ms was not enough
+        ThisThread::sleep_for(2); // Documentation says 200 us; need 2 ticks to get minimum 1 ms.
         _esp.flush();
         _rst_pin.rst_deassert();
     } else {
@@ -618,7 +750,7 @@ int ESP8266Interface::socket_send(void *handle, const void *data, unsigned size)
     if (status == NSAPI_ERROR_WOULD_BLOCK
             && socket->proto == NSAPI_TCP
             && core_util_atomic_cas_u8(&_cbs[socket->id].deferred, &expect_false, true)) {
-        tr_debug("Postponing SIGIO from the device");
+        tr_debug("socket_send(...): Postponing SIGIO from the device.");
         if (!_global_event_queue->call_in(50, callback(this, &ESP8266Interface::event_deferred))) {
             MBED_ERROR(MBED_MAKE_ERROR(MBED_MODULE_DRIVER, MBED_ERROR_CODE_ENOMEM), \
                        "socket_send(): unable to add event to queue. Increase \"events.shared-eventsize\"\n");
@@ -825,9 +957,15 @@ void ESP8266Interface::refresh_conn_state_cb()
         // Doesn't require changes
         case NSAPI_STATUS_CONNECTING:
         case NSAPI_STATUS_GLOBAL_UP:
+            if (_software_conn_stat == IFACE_STATUS_DISCONNECTED) {
+                _software_conn_stat = IFACE_STATUS_CONNECTED;
+            }
             break;
         // Start from scratch if connection drops/is dropped
         case NSAPI_STATUS_DISCONNECTED:
+            if (_software_conn_stat == IFACE_STATUS_CONNECTED) {
+                _software_conn_stat = IFACE_STATUS_DISCONNECTED;
+            }
             break;
         // Handled on AT layer
         case NSAPI_STATUS_LOCAL_UP:
@@ -845,10 +983,16 @@ void ESP8266Interface::refresh_conn_state_cb()
         return;
     }
 
-    tr_debug("refresh_conn_state_cb(): changed to %d", _conn_stat);
+    tr_debug("refresh_conn_state_cb(): Changed to %d.", _conn_stat);
 
-    // Inform upper layers
     if (_conn_stat_cb) {
+        // _conn_stat_cb will be called in _connect_async or disconnect_assync to avoid race condition
+        if ((_software_conn_stat == IFACE_STATUS_CONNECTING
+                || _software_conn_stat == IFACE_STATUS_DISCONNECTING)
+                && (_conn_stat != NSAPI_STATUS_CONNECTING)) {
+            return;
+        }
+
         _conn_stat_cb(NSAPI_EVENT_CONNECTION_STATUS_CHANGE, _conn_stat);
     }
 }
@@ -862,8 +1006,6 @@ void ESP8266Interface::proc_oob_evnt()
 nsapi_error_t ESP8266Interface::_conn_status_to_error()
 {
     nsapi_error_t ret;
-
-    _esp.bg_process_oob(ESP8266_RECV_TIMEOUT, true);
 
     switch (_conn_stat) {
         case NSAPI_STATUS_DISCONNECTED:
@@ -894,7 +1036,7 @@ nsapi_error_t ESP8266Interface::set_country_code(bool track_ap, const char *coun
     for (int i = 0; i < len; i++) {
         // Validation done by firmware
         if (!country_code[i]) {
-            tr_warning("invalid country code");
+            tr_warning("set_country_code(): Invalid country code.");
             return NSAPI_ERROR_PARAMETER;
         }
     }

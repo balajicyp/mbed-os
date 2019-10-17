@@ -34,7 +34,7 @@ MBED_WEAK CellularDevice *CellularDevice::get_target_default_instance()
 }
 
 CellularDevice::CellularDevice(FileHandle *fh) : _network_ref_count(0), _sms_ref_count(0),
-    _info_ref_count(0), _fh(fh), _queue(8 * EVENTS_EVENT_SIZE), _state_machine(0), _nw(0), _status_cb(0)
+    _info_ref_count(0), _fh(fh), _queue(10 * EVENTS_EVENT_SIZE), _state_machine(0), _nw(0), _status_cb(0)
 {
     MBED_ASSERT(fh);
     set_sim_pin(NULL);
@@ -124,19 +124,19 @@ nsapi_error_t CellularDevice::create_state_machine()
         _nw->attach(callback(this, &CellularDevice::stm_callback));
         _state_machine = new CellularStateMachine(*this, *get_queue(), *_nw);
         _state_machine->set_cellular_callback(callback(this, &CellularDevice::stm_callback));
-        err = _state_machine->start_dispatch();
-        if (err) {
-            tr_error("Start state machine failed.");
-            delete _state_machine;
-            _state_machine = NULL;
-        }
-
         if (strlen(_plmn)) {
             _state_machine->set_plmn(_plmn);
         }
         if (strlen(_sim_pin)) {
             _state_machine->set_sim_pin(_sim_pin);
         }
+    }
+    err = _state_machine->start_dispatch();
+    if (err) {
+        tr_error("Start state machine failed.");
+        delete _state_machine;
+        _state_machine = NULL;
+        return err;
     }
     return err;
 }
@@ -229,8 +229,14 @@ void CellularDevice::cellular_callback(nsapi_event_t ev, intptr_t ptr, CellularC
 
 nsapi_error_t CellularDevice::shutdown()
 {
+    if (_state_machine) {
+        _state_machine->stop();
+    }
     CellularContext *curr = get_context_list();
     while (curr) {
+        if (curr->is_connected()) {
+            curr->disconnect();
+        }
         curr->cellular_callback(NSAPI_EVENT_CONNECTION_STATUS_CHANGE, NSAPI_STATUS_DISCONNECTED);
         curr = (CellularContext *)curr->_next;
     }
@@ -242,6 +248,11 @@ void CellularDevice::set_retry_timeout_array(const uint16_t timeout[], int array
     if (create_state_machine() == NSAPI_ERROR_OK) {
         _state_machine->set_retry_timeout_array(timeout, array_len);
     }
+}
+
+nsapi_error_t CellularDevice::clear()
+{
+    return NSAPI_ERROR_OK;
 }
 
 } // namespace mbed

@@ -15,6 +15,7 @@
  * limitations under the License.
  */
 
+#include "rtos/ThisThread.h"
 #include "CellularUtil.h"
 #include "AT_CellularDevice.h"
 #include "AT_CellularInformation.h"
@@ -44,13 +45,6 @@ AT_CellularDevice::AT_CellularDevice(FileHandle *fh) : CellularDevice(fh), _netw
     MBED_ASSERT(fh);
     _at = get_at_handler(fh);
     MBED_ASSERT(_at);
-
-    if (AT_CellularBase::get_property(AT_CellularBase::PROPERTY_AT_CGEREP)) {
-        _at->set_urc_handler("+CGEV: NW DEACT", callback(this, &AT_CellularDevice::urc_nw_deact));
-        _at->set_urc_handler("+CGEV: ME DEACT", callback(this, &AT_CellularDevice::urc_nw_deact));
-        _at->set_urc_handler("+CGEV: NW PDN D", callback(this, &AT_CellularDevice::urc_pdn_deact));
-        _at->set_urc_handler("+CGEV: ME PDN D", callback(this, &AT_CellularDevice::urc_pdn_deact));
-    }
 }
 
 AT_CellularDevice::~AT_CellularDevice()
@@ -82,6 +76,29 @@ AT_CellularDevice::~AT_CellularDevice()
     }
 
     release_at_handler(_at);
+}
+
+void AT_CellularDevice::set_at_urcs_impl()
+{
+}
+
+void AT_CellularDevice::set_at_urcs()
+{
+    if (AT_CellularBase::get_property(AT_CellularBase::PROPERTY_AT_CGEREP)) {
+        _at->set_urc_handler("+CGEV: NW DEACT", callback(this, &AT_CellularDevice::urc_nw_deact));
+        _at->set_urc_handler("+CGEV: ME DEACT", callback(this, &AT_CellularDevice::urc_nw_deact));
+        _at->set_urc_handler("+CGEV: NW PDN D", callback(this, &AT_CellularDevice::urc_pdn_deact));
+        _at->set_urc_handler("+CGEV: ME PDN D", callback(this, &AT_CellularDevice::urc_pdn_deact));
+    }
+
+    set_at_urcs_impl();
+}
+
+void AT_CellularDevice::setup_at_handler()
+{
+    set_at_urcs();
+
+    _at->set_send_delay(get_send_delay());
 }
 
 void AT_CellularDevice::urc_nw_deact()
@@ -186,6 +203,7 @@ nsapi_error_t AT_CellularDevice::get_sim_state(SimState &state)
     _at->flush();
     nsapi_error_t error = _at->at_cmd_str("+CPIN", "?", simstr, sizeof(simstr));
     ssize_t len = strlen(simstr);
+    device_err_t err = _at->get_last_device_error();
     _at->unlock();
 
     if (len != -1) {
@@ -197,7 +215,6 @@ nsapi_error_t AT_CellularDevice::get_sim_state(SimState &state)
             state = SimStatePukNeeded;
         } else {
             simstr[len] = '\0';
-            tr_error("Unknown SIM state %s", simstr);
             state = SimStateUnknown;
         }
     } else {
@@ -213,7 +230,11 @@ nsapi_error_t AT_CellularDevice::get_sim_state(SimState &state)
             tr_error("SIM PUK required");
             break;
         case SimStateUnknown:
-            tr_warn("SIM state unknown");
+            if (err.errType == DeviceErrorTypeErrorCME && err.errCode == 14) {
+                tr_info("SIM busy");
+            } else {
+                tr_warn("SIM state unknown");
+            }
             break;
         default:
             tr_info("SIM is ready");
@@ -241,7 +262,7 @@ nsapi_error_t AT_CellularDevice::set_pin(const char *sim_pin)
     const bool stored_debug_state = _at->get_debug();
     _at->set_debug(false);
 
-    _at->at_cmd_discard("+CPIN", "=,", "%s", sim_pin);
+    _at->at_cmd_discard("+CPIN", "=", "%s", sim_pin);
 
     _at->set_debug(stored_debug_state);
 
@@ -424,22 +445,27 @@ void AT_CellularDevice::modem_debug_on(bool on)
 
 nsapi_error_t AT_CellularDevice::init()
 {
+    setup_at_handler();
+
     _at->lock();
-    _at->flush();
-    _at->at_cmd_discard("E0", "");
-
-    _at->at_cmd_discard("+CMEE", "=1");
-
-    _at->at_cmd_discard("+CFUN", "=1");
+    for (int retry = 1; retry <= 3; retry++) {
+        _at->clear_error();
+        _at->flush();
+        _at->at_cmd_discard("E0", "");
+        _at->at_cmd_discard("+CMEE", "=1");
+        _at->at_cmd_discard("+CFUN", "=1");
+        if (_at->get_last_error() == NSAPI_ERROR_OK) {
+            break;
+        }
+        tr_debug("Wait 100ms to init modem");
+        rtos::ThisThread::sleep_for(100); // let modem have time to get ready
+    }
 
     return _at->unlock_return_error();
 }
 
 nsapi_error_t AT_CellularDevice::shutdown()
 {
-    if (_state_machine) {
-        _state_machine->reset();
-    }
     CellularDevice::shutdown();
 
     return _at->at_cmd_discard("+CFUN", "=0");
@@ -597,4 +623,13 @@ void AT_CellularDevice::cellular_callback(nsapi_event_t ev, intptr_t ptr, Cellul
         }
     }
     CellularDevice::cellular_callback(ev, ptr, ctx);
+}
+
+nsapi_error_t AT_CellularDevice::clear()
+{
+    AT_CellularNetwork *net = static_cast<AT_CellularNetwork *>(open_network());
+    nsapi_error_t err = net->clear();
+    close_network();
+
+    return err;
 }

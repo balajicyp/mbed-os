@@ -18,6 +18,7 @@
 #include "MbedTester.h"
 #include "fpga_config.h"
 #include "BlockDevice.h"
+#include "rtos/ThisThread.h"
 #include "platform/mbed_wait_api.h"
 #include "platform/mbed_error.h"
 #include "drivers/MbedCRC.h"
@@ -536,8 +537,6 @@ static bool _firmware_header_valid(BlockDevice &flash, bool &valid)
 static bool _firmware_get_active_bank(BlockDevice &flash, bool &second_bank_active)
 {
     uint8_t buf[sizeof(SYNC_WORD)];
-    size_t pos = 0;
-    size_t read_size;
 
     if (flash.read(buf, FLASH_SECTOR_SIZE - sizeof(SYNC_WORD), sizeof(SYNC_WORD)) != BD_ERROR_OK) {
         return false;
@@ -708,7 +707,7 @@ bool MbedTester::firmware_dump(mbed::FileHandle *dest, mbed::Callback<void(uint8
             return false;
         }
         ssize_t write_size = dest->write(buf, read_size);
-        if (write_size != read_size) {
+        if ((uint32_t)write_size != read_size) {
             sys_pin_mode_disabled();
             return false;
         }
@@ -761,7 +760,7 @@ bool MbedTester::firmware_dump_all(mbed::FileHandle *dest, mbed::Callback<void(u
             return false;
         }
         ssize_t write_size = dest->write(buf, read_size);
-        if (write_size != read_size) {
+        if ((uint32_t)write_size != read_size) {
             sys_pin_mode_disabled();
             return false;
         }
@@ -1154,7 +1153,7 @@ uint8_t MbedTester::io_expander_read_index(int index, IOExpanderReg reg_type)
     }
 
     int read_success = io_expander_i2c_read(i2c_index, dev_addr, reg, read_byte, 1);
-    // MBED_ASSERT(read_success == 0);
+    MBED_ASSERT(read_success == 0);
     uint8_t bit = (read_byte[0] & (1 << reg_bit)) >> reg_bit;
     return bit;
 }
@@ -1489,7 +1488,7 @@ uint8_t MbedTester::io_expander_read_bb(PinName pin, IOExpanderReg reg_type)
     }
 
     int read_success = io_expander_i2c_read_bb(sda, scl, dev_addr, reg, read_byte, 1);
-    // MBED_ASSERT(read_success == 0);
+    MBED_ASSERT(read_success == 0);
     uint8_t bit = (read_byte[0] & (1 << reg_bit)) >> reg_bit;
     return bit;
 }
@@ -1733,7 +1732,7 @@ uint8_t MbedTester::get_pwm_cycles_high()
 
 uint16_t MbedTester::get_analogmuxin_measurement()
 {
-    wait_ms(1);//wait for value to stabalize
+    rtos::ThisThread::sleep_for(1);//wait for value to stabalize
     //take snapshot of conversion value to make safe for reading
     set_snapshot();
     uint16_t an_mux_analogin_measurement = 0;

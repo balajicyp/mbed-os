@@ -110,7 +110,7 @@ void UDPSOCKET_ECHOTEST_BURST()
             } else if (recvd < 0) {
                 pkg_fail += BURST_PKTS - j; // Assume all the following packets of the burst to be lost
                 printf("[%02d] network error %d\n", i, recvd);
-                wait(recv_timeout);
+                ThisThread::sleep_for(recv_timeout * 1000);
                 recv_timeout *= 2; // Back off,
                 break;
             } else if (temp_addr != udp_addr) {
@@ -146,7 +146,7 @@ void UDPSOCKET_ECHOTEST_BURST()
     // Packet loss up to 30% tolerated
     TEST_ASSERT_DOUBLE_WITHIN(TOLERATED_LOSS_RATIO, EXPECTED_LOSS_RATIO, loss_ratio);
     // 70% of the bursts need to be successful
-    TEST_ASSERT_INT_WITHIN(3 * (BURST_CNT / 10), BURST_CNT, ok_bursts);
+    TEST_ASSERT(BURST_CNT - ok_bursts < 3 * (BURST_CNT / 10));
 
     TEST_ASSERT_EQUAL(NSAPI_ERROR_OK, sock.close());
 }
@@ -229,7 +229,7 @@ PKT_OK:
     // Packet loss up to 30% tolerated
     TEST_ASSERT_DOUBLE_WITHIN(TOLERATED_LOSS_RATIO, EXPECTED_LOSS_RATIO, loss_ratio);
     // 70% of the bursts need to be successful
-    TEST_ASSERT_INT_WITHIN(3 * (BURST_CNT / 10), BURST_CNT, ok_bursts);
+    TEST_ASSERT(BURST_CNT - ok_bursts < 3 * (BURST_CNT / 10));
 
     TEST_ASSERT_EQUAL(NSAPI_ERROR_OK, sock.close());
 }

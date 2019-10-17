@@ -19,12 +19,13 @@
 #include <limits.h>
 #include "mbed.h"
 #include "mbed_lp_ticker_wrapper.h"
+#include "hal/us_ticker_api.h"
 #include "../sleep/sleep_test_utils.h"
 #include "sleep_manager_api_tests.h"
 
 #if !DEVICE_SLEEP
 #error [NOT_SUPPORTED] test not supported
-#endif
+#else
 
 #define SLEEP_DURATION_US 20000ULL
 #define DEEP_SLEEP_TEST_CHECK_WAIT_US 2000
@@ -333,3 +334,5 @@ int main()
 {
     return !Harness::run(specification);
 }
+
+#endif // !DEVICE_SLEEP

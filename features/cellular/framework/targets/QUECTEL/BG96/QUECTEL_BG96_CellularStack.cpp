@@ -15,15 +15,22 @@
  * limitations under the License.
  */
 
+#include <string.h>
 #include "QUECTEL/BG96/QUECTEL_BG96_CellularStack.h"
 #include "CellularLog.h"
 
 using namespace mbed;
 
 QUECTEL_BG96_CellularStack::QUECTEL_BG96_CellularStack(ATHandler &atHandler, int cid, nsapi_ip_stack_t stack_type) : AT_CellularStack(atHandler, cid, stack_type)
+#ifdef MBED_CONF_CELLULAR_OFFLOAD_DNS_QUERIES
+    , _dns_callback(NULL), _dns_version(NSAPI_UNSPEC)
+#endif
 {
     _at.set_urc_handler("+QIURC: \"recv", mbed::Callback<void()>(this, &QUECTEL_BG96_CellularStack::urc_qiurc_recv));
     _at.set_urc_handler("+QIURC: \"close", mbed::Callback<void()>(this, &QUECTEL_BG96_CellularStack::urc_qiurc_closed));
+#ifdef MBED_CONF_CELLULAR_OFFLOAD_DNS_QUERIES
+    _at.set_urc_handler("+QIURC: \"dnsgip\",", mbed::Callback<void()>(this, &QUECTEL_BG96_CellularStack::urc_qiurc_dnsgip));
+#endif
 }
 
 QUECTEL_BG96_CellularStack::~QUECTEL_BG96_CellularStack()
@@ -54,8 +61,10 @@ nsapi_error_t QUECTEL_BG96_CellularStack::socket_connect(nsapi_socket_t handle, 
 
     _at.lock();
     if (socket->proto == NSAPI_TCP) {
+        char ipdot[NSAPI_IP_SIZE];
+        ip2dot(address, ipdot);
         _at.at_cmd_discard("+QIOPEN", "=", "%d%d%s%s%d%d%d", _cid, request_connect_id, "TCP",
-                           address.get_ip_address(), address.get_port(), socket->localAddress.get_port(), 0);
+                           ipdot, address.get_port(), socket->localAddress.get_port(), 0);
 
         handle_open_socket_response(modem_connect_id, err);
 
@@ -68,7 +77,7 @@ nsapi_error_t QUECTEL_BG96_CellularStack::socket_connect(nsapi_socket_t handle, 
             _at.at_cmd_discard("+QICLOSE", "=", "%d", modem_connect_id);
 
             _at.at_cmd_discard("+QIOPEN", "=", "%d%d%s%s%d%d%d", _cid, request_connect_id, "TCP",
-                               address.get_ip_address(), address.get_port(), socket->localAddress.get_port(), 0);
+                               ipdot, address.get_port(), socket->localAddress.get_port(), 0);
 
             handle_open_socket_response(modem_connect_id, err);
         }
@@ -101,6 +110,41 @@ void QUECTEL_BG96_CellularStack::urc_qiurc_closed()
 {
     urc_qiurc(URC_CLOSED);
 }
+
+#ifdef MBED_CONF_CELLULAR_OFFLOAD_DNS_QUERIES
+bool QUECTEL_BG96_CellularStack::read_dnsgip(SocketAddress &address, nsapi_version_t _dns_version)
+{
+    if (_at.read_int() == 0) {
+        int count = _at.read_int();
+        _at.skip_param();
+        for (; count > 0; count--) {
+            _at.resp_start("+QIURC: \"dnsgip\",");
+            char ipAddress[NSAPI_IP_SIZE];
+            _at.read_string(ipAddress, sizeof(ipAddress));
+            if (address.set_ip_address(ipAddress)) {
+                if (_dns_version == NSAPI_UNSPEC || _dns_version == address.get_ip_version()) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+void QUECTEL_BG96_CellularStack::urc_qiurc_dnsgip()
+{
+    if (!_dns_callback) {
+        return;
+    }
+    SocketAddress address;
+    if (read_dnsgip(address, _dns_version)) {
+        _dns_callback(NSAPI_ERROR_OK, &address);
+    } else {
+        _dns_callback(NSAPI_ERROR_DNS_FAILURE, NULL);
+    }
+    _dns_callback = NULL;
+}
+#endif
 
 void QUECTEL_BG96_CellularStack::urc_qiurc(urc_type_t urc_type)
 {
@@ -168,7 +212,7 @@ nsapi_error_t QUECTEL_BG96_CellularStack::create_socket_impl(CellularSocket *soc
 
     if (socket->proto == NSAPI_UDP && !socket->connected) {
         _at.at_cmd_discard("+QIOPEN", "=", "%d%d%s%s%d%d%d", _cid, request_connect_id, "UDP SERVICE",
-                           (_stack_type == IPV4_STACK) ? "127.0.0.1" : "0:0:0:0:0:0:0:1",
+                           (_ip_ver_sendto == NSAPI_IPv4) ? "127.0.0.1" : "0:0:0:0:0:0:0:1",
                            remote_port, socket->localAddress.get_port(), 0);
 
         handle_open_socket_response(modem_connect_id, err);
@@ -181,14 +225,16 @@ nsapi_error_t QUECTEL_BG96_CellularStack::create_socket_impl(CellularSocket *soc
             socket_close_impl(modem_connect_id);
 
             _at.at_cmd_discard("+QIOPEN", "=", "%d%d%s%s%d%d%d", _cid, request_connect_id, "UDP SERVICE",
-                               (_stack_type == IPV4_STACK) ? "127.0.0.1" : "0:0:0:0:0:0:0:1",
+                               (_ip_ver_sendto == NSAPI_IPv4) ? "127.0.0.1" : "0:0:0:0:0:0:0:1",
                                remote_port, socket->localAddress.get_port(), 0);
 
             handle_open_socket_response(modem_connect_id, err);
         }
     } else if (socket->proto == NSAPI_UDP && socket->connected) {
+        char ipdot[NSAPI_IP_SIZE];
+        ip2dot(socket->remoteAddress, ipdot);
         _at.at_cmd_discard("+QIOPEN", "=", "%d%d%s%s%d", _cid, request_connect_id, "UDP",
-                           socket->remoteAddress.get_ip_address(), socket->remoteAddress.get_port());
+                           ipdot, socket->remoteAddress.get_port());
 
         handle_open_socket_response(modem_connect_id, err);
 
@@ -200,7 +246,7 @@ nsapi_error_t QUECTEL_BG96_CellularStack::create_socket_impl(CellularSocket *soc
             socket_close_impl(modem_connect_id);
 
             _at.at_cmd_discard("+QIOPEN", "=", "%d%d%s%s%d", _cid, request_connect_id, "UDP",
-                               socket->remoteAddress.get_ip_address(), socket->remoteAddress.get_port());
+                               ipdot, socket->remoteAddress.get_port());
 
             handle_open_socket_response(modem_connect_id, err);
         }
@@ -227,6 +273,12 @@ nsapi_size_or_error_t QUECTEL_BG96_CellularStack::socket_sendto_impl(CellularSoc
         return NSAPI_ERROR_PARAMETER;
     }
 
+    if (_ip_ver_sendto != address.get_ip_version()) {
+        _ip_ver_sendto =  address.get_ip_version();
+        socket_close_impl(socket->id);
+        create_socket_impl(socket);
+    }
+
     int sent_len = 0;
     int sent_len_before = 0;
     int sent_len_after = 0;
@@ -236,8 +288,10 @@ nsapi_size_or_error_t QUECTEL_BG96_CellularStack::socket_sendto_impl(CellularSoc
 
     // Send
     if (socket->proto == NSAPI_UDP) {
+        char ipdot[NSAPI_IP_SIZE];
+        ip2dot(address, ipdot);
         _at.cmd_start_stop("+QISEND", "=", "%d%d%s%d", socket->id, size,
-                           address.get_ip_address(), address.get_port());
+                           ipdot, address.get_port());
     } else {
         _at.cmd_start_stop("+QISEND", "=", "%d%d", socket->id, size);
     }
@@ -298,4 +352,82 @@ nsapi_size_or_error_t QUECTEL_BG96_CellularStack::socket_recvfrom_impl(CellularS
     }
 
     return recv_len;
+}
+
+#ifdef MBED_CONF_CELLULAR_OFFLOAD_DNS_QUERIES
+nsapi_error_t QUECTEL_BG96_CellularStack::gethostbyname(const char *host, SocketAddress *address,
+                                                        nsapi_version_t version, const char *interface_name)
+{
+    (void) interface_name;
+    MBED_ASSERT(host);
+    MBED_ASSERT(address);
+
+    _at.lock();
+
+    if (_dns_callback) {
+        _at.unlock();
+        return NSAPI_ERROR_BUSY;
+    }
+
+    if (!address->set_ip_address(host)) {
+        _at.set_at_timeout(60 * 1000); // from BG96_TCP/IP_AT_Commands_Manual_V1.0
+        _at.at_cmd_discard("+QIDNSGIP", "=", "%d%s", _cid, host);
+        _at.resp_start("+QIURC: \"dnsgip\",");
+        _at.restore_at_timeout();
+        if (!read_dnsgip(*address, version)) {
+            _at.unlock();
+            return NSAPI_ERROR_DNS_FAILURE;
+        }
+    }
+
+    return _at.unlock_return_error();
+}
+
+nsapi_value_or_error_t QUECTEL_BG96_CellularStack::gethostbyname_async(const char *host, hostbyname_cb_t callback,
+                                                                       nsapi_version_t version, const char *interface_name)
+{
+    (void) interface_name;
+    MBED_ASSERT(host);
+    MBED_ASSERT(callback);
+
+    _at.lock();
+
+    if (_dns_callback) {
+        _at.unlock();
+        return NSAPI_ERROR_BUSY;
+    }
+
+    _at.at_cmd_discard("+QIDNSGIP", "=", "%d%s", _cid, host);
+    if (!_at.get_last_error()) {
+        _dns_callback = callback;
+        _dns_version = version;
+    }
+
+    return _at.unlock_return_error() ? NSAPI_ERROR_DNS_FAILURE : NSAPI_ERROR_OK;
+}
+
+nsapi_error_t QUECTEL_BG96_CellularStack::gethostbyname_async_cancel(int id)
+{
+    _at.lock();
+    _dns_callback = NULL;
+    _at.unlock();
+    return NSAPI_ERROR_OK;
+}
+#endif
+
+void QUECTEL_BG96_CellularStack::ip2dot(const SocketAddress &ip, char *dot)
+{
+    if (ip.get_ip_version() == NSAPI_IPv6) {
+        const uint8_t *bytes = (uint8_t *)ip.get_ip_bytes();
+        for (int i = 0; i < NSAPI_IPv6_BYTES; i += 2) {
+            if (i != 0) {
+                *dot++ = ':';
+            }
+            dot += sprintf(dot, "%x", (*(bytes + i) << 8 | *(bytes + i + 1)));
+        }
+    } else if (ip.get_ip_version() == NSAPI_IPv4) {
+        strcpy(dot, ip.get_ip_address());
+    } else {
+        *dot = '\0';
+    }
 }

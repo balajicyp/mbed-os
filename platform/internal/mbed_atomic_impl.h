@@ -141,6 +141,7 @@ extern "C" {
 #elif defined __clang__ || defined __GNUC__
 #define DO_MBED_LOCKFREE_NEWVAL_2OP_ASM(OP, Constants, M)       \
     __asm volatile (                                            \
+        ".syntax unified\n\t"                                   \
         "LDREX"#M "\t%[newValue], %[value]\n\t"                 \
         #OP       "\t%[newValue], %[arg]\n\t"                   \
         "STREX"#M "\t%[fail], %[newValue], %[value]\n\t"        \
@@ -1338,7 +1339,7 @@ DO_MBED_ATOMIC_OP_U_TEMPLATES(fetch_and)
 DO_MBED_ATOMIC_OP_U_TEMPLATES(fetch_or)
 DO_MBED_ATOMIC_OP_U_TEMPLATES(fetch_xor)
 
-namespace mbed {
+namespace mstd {
 namespace impl {
 
 // Use custom assembler forms for pre-ops where available, else construct from post-ops

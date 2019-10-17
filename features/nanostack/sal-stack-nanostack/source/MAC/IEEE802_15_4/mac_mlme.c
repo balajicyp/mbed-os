@@ -232,7 +232,6 @@ uint8_t mac_mlme_beacon_req_tx(protocol_interface_rf_mac_setup_s *rf_ptr)
         buf->fcf_dsn.DstPanPresents = true;
         buf->fcf_dsn.SrcPanPresents = false;
 
-        tr_debug("BEA REQ tx");
         mcps_sap_pd_req_queue_write(rf_ptr, buf);
         return 1;
     }
@@ -739,7 +738,7 @@ int8_t mac_mlme_set_req(protocol_interface_rf_mac_setup_s *rf_mac_setup, const m
     if (!set_req || !rf_mac_setup || !rf_mac_setup->dev_driver || !rf_mac_setup->dev_driver->phy_driver) {
         return -1;
     }
-
+    uint8_t *pu8 = NULL;
     switch (set_req->attr) {
         case macAckWaitDuration:
             return mac_mlme_set_ack_wait_duration(rf_mac_setup, set_req);
@@ -759,11 +758,29 @@ int8_t mac_mlme_set_req(protocol_interface_rf_mac_setup_s *rf_mac_setup, const m
                 memcpy(rf_mac_setup->coord_long_address, set_req->value_pointer, 8);
             }
             return 0;
+        case macTXPower:
+            pu8 = (uint8_t *) set_req->value_pointer;
+            rf_mac_setup->dev_driver->phy_driver->extension(PHY_EXTENSION_SET_TX_POWER, pu8);
+            tr_debug("Set TX output power to %u%%", *pu8);
+            return 0;
+        case macCCAThreshold:
+            pu8 = (uint8_t *) set_req->value_pointer;
+            rf_mac_setup->dev_driver->phy_driver->extension(PHY_EXTENSION_SET_CCA_THRESHOLD, pu8);
+            tr_debug("Set CCA threshold to %u%%", *pu8);
+            return 0;
         case macMultiCSMAParameters:
             return mac_mlme_set_multi_csma_parameters(rf_mac_setup, set_req);
         case macRfConfiguration:
             rf_mac_setup->dev_driver->phy_driver->extension(PHY_EXTENSION_SET_RF_CONFIGURATION, (uint8_t *) set_req->value_pointer);
             mac_mlme_set_symbol_rate(rf_mac_setup);
+            phy_rf_channel_configuration_s *config_params = (phy_rf_channel_configuration_s *)set_req->value_pointer;
+            tr_info("RF config update:");
+            tr_info("Frequency(ch0): %"PRIu32"Hz", config_params->channel_0_center_frequency);
+            tr_info("Channel spacing: %"PRIu32"Hz", config_params->channel_spacing);
+            tr_info("Datarate: %"PRIu32"bps", config_params->datarate);
+            tr_info("Number of channels: %u", config_params->number_of_channels);
+            tr_info("Modulation: %u", config_params->modulation);
+            tr_info("Modulation index: %u", config_params->modulation_index);
             return 0;
         default:
             return mac_mlme_handle_set_values(rf_mac_setup, set_req);
@@ -843,7 +860,6 @@ static void mlme_scan_operation(protocol_interface_rf_mac_setup_s *rf_mac_setup)
     channel = mlme_scan_analyze_next_channel(&rf_mac_setup->mac_channel_list, true);
     if (channel > 0xff || rf_mac_setup->mac_mlme_scan_resp->ResultListSize == MLME_MAC_RES_SIZE_MAX) {
         resp->status = MLME_SUCCESS;
-        tr_debug("Scan Complete..Halt MAC");
         platform_enter_critical();
         mac_mlme_mac_radio_disabled(rf_mac_setup);
         if (resp->ResultListSize == 0 && rf_mac_setup->scan_type == MAC_ACTIVE_SCAN) {
@@ -855,7 +871,6 @@ static void mlme_scan_operation(protocol_interface_rf_mac_setup_s *rf_mac_setup)
         platform_exit_critical();
         //Scan Confirmation
         mac_generic_event_trig(MAC_MLME_SCAN_CONFIRM_HANDLER, rf_mac_setup, false);
-        tr_debug("Trig confirm");
         rf_mac_setup->scan_active = false;
     } else {
         mac_mlme_scan_init((uint8_t) channel, rf_mac_setup);
@@ -987,7 +1002,6 @@ static void mac_mlme_free_scan_temporary_data(protocol_interface_rf_mac_setup_s 
     rf_mac_setup->scan_active = false;
     if (rf_mac_setup->mac_mlme_scan_resp) {
         mlme_scan_conf_t *r = rf_mac_setup->mac_mlme_scan_resp;
-        tr_debug("%02x", r->ResultListSize);
         if (r->ED_values) {
             ns_dyn_mem_free(r->ED_values);
             r->ED_values = NULL;
@@ -995,12 +1009,10 @@ static void mac_mlme_free_scan_temporary_data(protocol_interface_rf_mac_setup_s 
         uint8_t i = 0;
         while (i < r->ResultListSize) {
             if (r->PAN_values[i]) {
-                tr_debug("Free PAN result");
                 ns_dyn_mem_free(r->PAN_values[i]);
             }
             i++;
         }
-        tr_debug("Free Response");
         ns_dyn_mem_free(rf_mac_setup->mac_mlme_scan_resp);
         rf_mac_setup->mac_mlme_scan_resp = NULL;
     }
@@ -1399,11 +1411,6 @@ static void mac_mlme_start_confirm_handler(protocol_interface_rf_mac_setup_s *rf
 
 static void mac_mlme_scan_confirm_handler(protocol_interface_rf_mac_setup_s *rf_ptr, const mlme_scan_conf_t *conf)
 {
-    if (conf->ScanType == MAC_ACTIVE_SCAN) {
-        tr_debug("Active Scan Result");
-    } else if (conf->ScanType == MAC_ED_SCAN_TYPE) {
-        tr_debug("ED Scan Result");
-    }
     if (rf_ptr->tun_extension_rf_driver) {
         virtual_data_req_t scan_conf;
         uint8_t buf_temp[2];

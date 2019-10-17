@@ -41,4 +41,7 @@ set(unittest-test-sources
   stubs/SerialBase_stub.cpp
   stubs/CellularContext_stub.cpp
   stubs/CellularUtil_stub.cpp
+  stubs/SocketAddress_stub.cpp
+  stubs/ConditionVariable_stub.cpp
+  stubs/Mutex_stub.cpp
 )

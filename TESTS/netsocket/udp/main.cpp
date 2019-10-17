@@ -19,7 +19,7 @@
 #if !defined(MBED_CONF_TARGET_NETWORK_DEFAULT_INTERFACE_TYPE) || \
     (MBED_CONF_TARGET_NETWORK_DEFAULT_INTERFACE_TYPE == WIFI && !defined(MBED_CONF_NSAPI_DEFAULT_WIFI_SSID))
 #error [NOT_SUPPORTED] No network configuration found for this target.
-#endif
+#else
 
 #include "mbed.h"
 #include "greentea-client/test_env.h"
@@ -30,7 +30,7 @@
 
 #ifndef ECHO_SERVER_ADDR
 #error [NOT_SUPPORTED] Requires parameters for echo server
-#endif
+#else
 
 using namespace utest::v1;
 
@@ -59,7 +59,7 @@ static void _ifup()
     NetworkInterface *net = NetworkInterface::get_default_instance();
     nsapi_error_t err = net->connect();
     TEST_ASSERT_EQUAL(NSAPI_ERROR_OK, err);
-    printf("MBED: UDPClient IP address is '%s'\n", net->get_ip_address());
+    printf("MBED: UDPClient IP address is '%s'\n", net->get_ip_address() ? net->get_ip_address() : "null");
 }
 
 static void _ifdown()
@@ -201,3 +201,6 @@ int main()
 {
     return !Harness::run(specification);
 }
+
+#endif // ECHO_SERVER_ADDR
+#endif // !defined(MBED_CONF_TARGET_NETWORK_DEFAULT_INTERFACE_TYPE) || (MBED_CONF_TARGET_NETWORK_DEFAULT_INTERFACE_TYPE == WIFI && !defined(MBED_CONF_NSAPI_DEFAULT_WIFI_SSID))
